@@ -80,5 +80,6 @@ pub const VIBE_BASH_MATCH: &str = "bash";
 pub const ANTIGRAVITY_HOOK_COMMAND: &str = "rtk hook antigravity";
 pub const ANTIGRAVITY_HOOK_NAME: &str = "rtk-rewrite";
 pub const ANTIGRAVITY_RUN_COMMAND_MATCHER: &str = "run_command";
+pub const ANTIGRAVITY_DIR: &str = ".gemini/antigravity-cli";
 pub const AGENTS_DIR: &str = ".agents";
 pub const GEMINI_CONFIG_DIR: &str = ".gemini/config";

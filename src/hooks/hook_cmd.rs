@@ -1061,9 +1061,13 @@ fn run_antigravity_inner(input: &str) -> String {
             })
             .to_string()
         }
-        HookDecision::AllowRewrite(ref rewritten) | HookDecision::AskRewrite(ref rewritten) => {
+        HookDecision::AllowRewrite(ref rewritten) => {
             audit_log("rewrite", cmd, rewritten);
             antigravity_rewrite_json(cmd_key, rewritten, "allow")
+        }
+        HookDecision::AskRewrite(ref rewritten) => {
+            audit_log("rewrite", cmd, rewritten);
+            antigravity_rewrite_json(cmd_key, rewritten, "ask")
         }
         HookDecision::Defer => antigravity_passthrough_json(),
     }
@@ -1074,14 +1078,17 @@ fn antigravity_passthrough_json() -> String {
 }
 
 fn antigravity_rewrite_json(cmd_key: &str, rewritten: &str, decision: &str) -> String {
-    serde_json::json!({
+    let mut val = serde_json::json!({
         "decision": decision,
         "reason": "RTK auto-rewrite",
         "overwrite": {
             cmd_key: rewritten
         }
-    })
-    .to_string()
+    });
+    if decision == "allow" || decision == "ask" {
+        val["permissionOverrides"] = serde_json::json!([format!("command({rewritten})")]);
+    }
+    val.to_string()
 }
 
 #[cfg(test)]
@@ -2618,10 +2625,17 @@ mod tests {
         let input = antigravity_input("run_command", "git status");
         let out = run_antigravity_inner(&input);
         let v: Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v.get("decision").and_then(|d| d.as_str()), Some("allow"));
+        assert!(matches!(
+            v.get("decision").and_then(|d| d.as_str()),
+            Some("allow") | Some("ask")
+        ));
         assert_eq!(
             v.pointer("/overwrite/CommandLine").and_then(|c| c.as_str()),
             Some("rtk git status")
+        );
+        assert_eq!(
+            v.pointer("/permissionOverrides/0").and_then(|c| c.as_str()),
+            Some("command(rtk git status)")
         );
     }
 
@@ -2633,6 +2647,10 @@ mod tests {
         assert_eq!(
             v.pointer("/overwrite/CommandLine").and_then(|c| c.as_str()),
             Some("rtk git status")
+        );
+        assert_eq!(
+            v.pointer("/permissionOverrides/0").and_then(|c| c.as_str()),
+            Some("command(rtk git status)")
         );
     }
 
@@ -2652,6 +2670,10 @@ mod tests {
         assert_eq!(
             v.pointer("/overwrite/commandLine").and_then(|c| c.as_str()),
             Some("rtk git status")
+        );
+        assert_eq!(
+            v.pointer("/permissionOverrides/0").and_then(|c| c.as_str()),
+            Some("command(rtk git status)")
         );
     }
 
@@ -2688,5 +2710,55 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v.get("decision").and_then(|d| d.as_str()), Some("allow"));
         assert!(v.get("overwrite").is_none());
+    }
+
+    fn antigravity_render_with_rules(
+        cmd: &str,
+        deny: &[String],
+        ask: &[String],
+        allow: &[String],
+    ) -> String {
+        let verdict = permissions::check_command_with_rules(cmd, deny, ask, allow);
+        match decide_from_verdict(cmd, verdict) {
+            HookDecision::Deny => serde_json::json!({
+                "decision": "deny",
+                "reason": "Blocked by RTK permission rule"
+            })
+            .to_string(),
+            HookDecision::AllowRewrite(ref rewritten) => {
+                antigravity_rewrite_json("CommandLine", rewritten, "allow")
+            }
+            HookDecision::AskRewrite(ref rewritten) => {
+                antigravity_rewrite_json("CommandLine", rewritten, "ask")
+            }
+            HookDecision::Defer => antigravity_passthrough_json(),
+        }
+    }
+
+    #[test]
+    fn test_antigravity_allow_rule_emits_decision_allow() {
+        let allow = vec!["git *".to_string()];
+        let out = antigravity_render_with_rules("git status", &[], &[], &allow);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["decision"], "allow");
+        assert_eq!(v["overwrite"]["CommandLine"], "rtk git status");
+        assert_eq!(v["permissionOverrides"][0], "command(rtk git status)");
+    }
+
+    #[test]
+    fn test_antigravity_deny_rule_emits_decision_deny() {
+        let deny = vec!["rm -rf *".to_string()];
+        let out = antigravity_render_with_rules("rm -rf src", &deny, &[], &[]);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["decision"], "deny");
+    }
+
+    #[test]
+    fn test_antigravity_default_emits_decision_ask() {
+        let out = antigravity_render_with_rules("git status", &[], &[], &[]);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["decision"], "ask");
+        assert_eq!(v["overwrite"]["CommandLine"], "rtk git status");
+        assert_eq!(v["permissionOverrides"][0], "command(rtk git status)");
     }
 }

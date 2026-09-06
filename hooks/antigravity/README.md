@@ -32,11 +32,14 @@
 
 ```json
 {
-  "decision": "allow",
+  "decision": "ask",
   "reason": "RTK auto-rewrite",
   "overwrite": {
     "CommandLine": "rtk git status"
-  }
+  },
+  "permissionOverrides": [
+    "command(rtk git status)"
+  ]
 }
 ```
 
