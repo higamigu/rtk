@@ -1052,24 +1052,36 @@ fn run_antigravity_inner(input: &str) -> String {
         return antigravity_passthrough_json();
     }
 
-    match decide_hook_action(cmd, permissions::Host::Antigravity) {
-        HookDecision::Deny => {
-            audit_log("deny", cmd, "");
-            serde_json::json!({
-                "decision": "deny",
-                "reason": "Blocked by RTK permission rule"
+    let verdict = permissions::check_command_for(cmd, permissions::Host::Antigravity);
+    if verdict == permissions::PermissionVerdict::Deny {
+        audit_log("deny", cmd, "");
+        return serde_json::json!({
+            "decision": "deny",
+            "reason": "Blocked by RTK permission rule"
+        })
+        .to_string();
+    }
+
+    if let Some(rewritten) = get_rewritten(cmd) {
+        audit_log("rewrite", cmd, &rewritten);
+        match verdict {
+            permissions::PermissionVerdict::Allow => {
+                antigravity_rewrite_json(cmd_key, &rewritten, "allow", true)
+            }
+            permissions::PermissionVerdict::Ask => {
+                antigravity_rewrite_json(cmd_key, &rewritten, "force_ask", false)
+            }
+            _ => antigravity_rewrite_json(cmd_key, &rewritten, "ask", true),
+        }
+    } else {
+        match verdict {
+            permissions::PermissionVerdict::Ask => serde_json::json!({
+                "decision": "force_ask",
+                "reason": "Requires confirmation per RTK permission rule"
             })
-            .to_string()
+            .to_string(),
+            _ => antigravity_passthrough_json(),
         }
-        HookDecision::AllowRewrite(ref rewritten) => {
-            audit_log("rewrite", cmd, rewritten);
-            antigravity_rewrite_json(cmd_key, rewritten, "allow")
-        }
-        HookDecision::AskRewrite(ref rewritten) => {
-            audit_log("rewrite", cmd, rewritten);
-            antigravity_rewrite_json(cmd_key, rewritten, "ask")
-        }
-        HookDecision::Defer => antigravity_passthrough_json(),
     }
 }
 
@@ -1077,7 +1089,12 @@ fn antigravity_passthrough_json() -> String {
     r#"{"decision":"allow"}"#.to_string()
 }
 
-fn antigravity_rewrite_json(cmd_key: &str, rewritten: &str, decision: &str) -> String {
+fn antigravity_rewrite_json(
+    cmd_key: &str,
+    rewritten: &str,
+    decision: &str,
+    include_overrides: bool,
+) -> String {
     let mut val = serde_json::json!({
         "decision": decision,
         "reason": "RTK auto-rewrite",
@@ -1085,7 +1102,7 @@ fn antigravity_rewrite_json(cmd_key: &str, rewritten: &str, decision: &str) -> S
             cmd_key: rewritten
         }
     });
-    if decision == "allow" || decision == "ask" {
+    if include_overrides {
         val["permissionOverrides"] = serde_json::json!([format!("command({rewritten})")]);
     }
     val.to_string()
@@ -2719,19 +2736,32 @@ mod tests {
         allow: &[String],
     ) -> String {
         let verdict = permissions::check_command_with_rules(cmd, deny, ask, allow);
-        match decide_from_verdict(cmd, verdict) {
-            HookDecision::Deny => serde_json::json!({
+        if verdict == permissions::PermissionVerdict::Deny {
+            return serde_json::json!({
                 "decision": "deny",
                 "reason": "Blocked by RTK permission rule"
             })
-            .to_string(),
-            HookDecision::AllowRewrite(ref rewritten) => {
-                antigravity_rewrite_json("CommandLine", rewritten, "allow")
+            .to_string();
+        }
+        if let Some(rewritten) = get_rewritten(cmd) {
+            match verdict {
+                permissions::PermissionVerdict::Allow => {
+                    antigravity_rewrite_json("CommandLine", &rewritten, "allow", true)
+                }
+                permissions::PermissionVerdict::Ask => {
+                    antigravity_rewrite_json("CommandLine", &rewritten, "force_ask", false)
+                }
+                _ => antigravity_rewrite_json("CommandLine", &rewritten, "ask", true),
             }
-            HookDecision::AskRewrite(ref rewritten) => {
-                antigravity_rewrite_json("CommandLine", rewritten, "ask")
+        } else {
+            match verdict {
+                permissions::PermissionVerdict::Ask => serde_json::json!({
+                    "decision": "force_ask",
+                    "reason": "Requires confirmation per RTK permission rule"
+                })
+                .to_string(),
+                _ => antigravity_passthrough_json(),
             }
-            HookDecision::Defer => antigravity_passthrough_json(),
         }
     }
 
@@ -2760,5 +2790,29 @@ mod tests {
         assert_eq!(v["decision"], "ask");
         assert_eq!(v["overwrite"]["CommandLine"], "rtk git status");
         assert_eq!(v["permissionOverrides"][0], "command(rtk git status)");
+    }
+
+    #[test]
+    fn test_antigravity_explicit_ask_emits_force_ask_without_overrides() {
+        let ask = vec!["git commit".to_string()];
+        let out = antigravity_render_with_rules("git commit -m 'test'", &[], &ask, &[]);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["decision"], "force_ask");
+        assert!(v.get("permissionOverrides").is_none());
+        assert_eq!(v["overwrite"]["CommandLine"], "rtk git commit -m 'test'");
+    }
+
+    #[test]
+    fn test_antigravity_compound_command_with_ask_emits_force_ask() {
+        let allow = vec!["git".to_string()];
+        let ask = vec!["git commit".to_string()];
+        let out = antigravity_render_with_rules("git add . && git commit -m 'test'", &[], &ask, &allow);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["decision"], "force_ask");
+        assert!(v.get("permissionOverrides").is_none());
+        assert_eq!(
+            v["overwrite"]["CommandLine"],
+            "rtk git add . && rtk git commit -m 'test'"
+        );
     }
 }
