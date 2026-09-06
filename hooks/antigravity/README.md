@@ -10,6 +10,7 @@
 - **Installation**:
   - Project scope: `rtk init --agent antigravity` (creates/patches `.agents/hooks.json` and writes `.agents/rules/antigravity-rtk-rules.md`).
   - Global scope: `rtk init -g --agent antigravity` (patches `~/.gemini/config/hooks.json`).
+  - Standalone script: `./hooks/antigravity/init.sh` (initializes/patches `~/.gemini/config/hooks.json`, with `--project` or `--file` options).
 
 ## JSON Protocol
 
