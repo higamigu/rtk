@@ -1003,6 +1003,87 @@ fn run_droid_inner_with_rules(
     droid_response_from_decision(&v, cmd, decide_from_verdict(cmd, verdict)).map(|o| o.to_string())
 }
 
+// ── Google Antigravity PreToolUse hook ─────────────────────────
+
+/// Run the Google Antigravity PreToolUse hook natively.
+pub fn run_antigravity() -> Result<()> {
+    let input = read_stdin_limited()?;
+    let output = run_antigravity_inner(&input);
+    let _ = writeln!(io::stdout(), "{output}");
+    Ok(())
+}
+
+fn run_antigravity_inner(input: &str) -> String {
+    let input = strip_leading_bom(input).trim();
+    if input.is_empty() {
+        return antigravity_passthrough_json();
+    }
+
+    let json: Value = match serde_json::from_str(input) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "[rtk hook] Failed to parse JSON input: {e}");
+            return antigravity_passthrough_json();
+        }
+    };
+
+    let tool_name = json
+        .pointer("/toolCall/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !tool_name.is_empty() && tool_name != "run_command" {
+        return antigravity_passthrough_json();
+    }
+
+    let cmd_key = if json.pointer("/toolCall/args/commandLine").is_some() {
+        "commandLine"
+    } else if json.pointer("/toolCall/args/command").is_some() {
+        "command"
+    } else {
+        "CommandLine"
+    };
+
+    let cmd = json
+        .pointer(&format!("/toolCall/args/{cmd_key}"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if cmd.is_empty() {
+        return antigravity_passthrough_json();
+    }
+
+    match decide_hook_action(cmd, permissions::Host::Antigravity) {
+        HookDecision::Deny => {
+            audit_log("deny", cmd, "");
+            serde_json::json!({
+                "decision": "deny",
+                "reason": "Blocked by RTK permission rule"
+            })
+            .to_string()
+        }
+        HookDecision::AllowRewrite(ref rewritten) | HookDecision::AskRewrite(ref rewritten) => {
+            audit_log("rewrite", cmd, rewritten);
+            antigravity_rewrite_json(cmd_key, rewritten, "allow")
+        }
+        HookDecision::Defer => antigravity_passthrough_json(),
+    }
+}
+
+fn antigravity_passthrough_json() -> String {
+    r#"{"decision":"allow"}"#.to_string()
+}
+
+fn antigravity_rewrite_json(cmd_key: &str, rewritten: &str, decision: &str) -> String {
+    serde_json::json!({
+        "decision": decision,
+        "reason": "RTK auto-rewrite",
+        "overwrite": {
+            cmd_key: rewritten
+        }
+    })
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2514,5 +2595,98 @@ mod tests {
     fn test_vibe_substitution_defers() {
         let input = vibe_input("bash", "echo $(rm -rf /)");
         assert!(run_vibe_inner(&input).is_none());
+    }
+
+    // --- Antigravity hook tests ---
+
+    fn antigravity_input(tool: &str, cmd: &str) -> String {
+        json!({
+            "toolCall": {
+                "name": tool,
+                "args": {
+                    "CommandLine": cmd
+                }
+            },
+            "stepIdx": 1,
+            "conversationId": "test-conv-id"
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn test_antigravity_rewrites_run_command() {
+        let input = antigravity_input("run_command", "git status");
+        let out = run_antigravity_inner(&input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.get("decision").and_then(|d| d.as_str()), Some("allow"));
+        assert_eq!(
+            v.pointer("/overwrite/CommandLine").and_then(|c| c.as_str()),
+            Some("rtk git status")
+        );
+    }
+
+    #[test]
+    fn test_antigravity_strips_utf8_bom() {
+        let input = format!("\u{feff}{}", antigravity_input("run_command", "git status"));
+        let out = run_antigravity_inner(&input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v.pointer("/overwrite/CommandLine").and_then(|c| c.as_str()),
+            Some("rtk git status")
+        );
+    }
+
+    #[test]
+    fn test_antigravity_handles_camel_case_arg() {
+        let input = json!({
+            "toolCall": {
+                "name": "run_command",
+                "args": {
+                    "commandLine": "git status"
+                }
+            }
+        })
+        .to_string();
+        let out = run_antigravity_inner(&input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v.pointer("/overwrite/commandLine").and_then(|c| c.as_str()),
+            Some("rtk git status")
+        );
+    }
+
+    #[test]
+    fn test_antigravity_ignores_non_run_command_tool() {
+        let input = antigravity_input("view_file", "foo.txt");
+        let out = run_antigravity_inner(&input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.get("decision").and_then(|d| d.as_str()), Some("allow"));
+        assert!(v.get("overwrite").is_none());
+    }
+
+    #[test]
+    fn test_antigravity_empty_command_passthrough() {
+        let input = antigravity_input("run_command", "");
+        let out = run_antigravity_inner(&input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.get("decision").and_then(|d| d.as_str()), Some("allow"));
+        assert!(v.get("overwrite").is_none());
+    }
+
+    #[test]
+    fn test_antigravity_malformed_json_fails_open() {
+        let out = run_antigravity_inner("not json at all");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.get("decision").and_then(|d| d.as_str()), Some("allow"));
+        assert!(v.get("overwrite").is_none());
+    }
+
+    #[test]
+    fn test_antigravity_unknown_binary_passthrough() {
+        let input = antigravity_input("run_command", "definitely-not-a-real-binary --foo");
+        let out = run_antigravity_inner(&input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.get("decision").and_then(|d| d.as_str()), Some("allow"));
+        assert!(v.get("overwrite").is_none());
     }
 }

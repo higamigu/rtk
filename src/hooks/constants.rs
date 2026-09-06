@@ -76,3 +76,9 @@ pub const VIBE_PROMPTS_SUBDIR: &str = "prompts";
 pub const VIBE_PROMPT_FILE: &str = "rtk.md";
 pub const VIBE_HOOK_NAME: &str = "rtk-rewrite";
 pub const VIBE_BASH_MATCH: &str = "bash";
+
+pub const ANTIGRAVITY_HOOK_COMMAND: &str = "rtk hook antigravity";
+pub const ANTIGRAVITY_HOOK_NAME: &str = "rtk-rewrite";
+pub const ANTIGRAVITY_RUN_COMMAND_MATCHER: &str = "run_command";
+pub const AGENTS_DIR: &str = ".agents";
+pub const GEMINI_CONFIG_DIR: &str = ".gemini/config";

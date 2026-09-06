@@ -50,6 +50,7 @@ Each agent subdirectory has its own README with hook-specific details:
 - **[`pi/`](pi/README.md)** — TypeScript extension, `tool_call` event, local `isBashToolCallEvent` guard, in-place mutation, `~/.pi/agent/extensions/`; **shared with Oh My Pi (OMP)** — OMP installs the same file at `.omp/extensions/` via its `legacy-pi-compat` layer
 - **[`hermes/`](hermes/README.md)** — Python plugin, `pre_tool_call` hook, in-place terminal command mutation
 - **[`vibe/`](vibe/README.md)** — Rust binary hook (`rtk hook vibe`), `pre_tool` entry in `~/.vibe/hooks.toml`, `hook_specific_output.tool_input` rewrite plus `system_message` for UI visibility
+- **[`antigravity/`](antigravity/README.md)** — Rust binary hook (`rtk hook antigravity`), `PreToolUse` lifecycle hook in `hooks.json` (workspace or global), `overwrite.CommandLine` rewrite
 
 ## Supported Agents
 
@@ -60,6 +61,7 @@ Each agent subdirectory has its own README with hook-specific details:
 | GitHub Copilot CLI | Rust binary (`rtk hook copilot`) | Deny-with-suggestion | No (agent retries) |
 | Cursor | Rust binary | Transparent rewrite | Yes (`updated_input`) |
 | Gemini CLI | Rust binary (`rtk hook gemini`) | Transparent rewrite | Yes (`hookSpecificOutput`) |
+| Google Antigravity | Rust binary (`rtk hook antigravity`) | Transparent rewrite | Yes (`overwrite.CommandLine`) |
 | Cline / Roo Code | Custom instructions (rules file) | Prompt-level guidance | N/A |
 | Windsurf | Custom instructions (rules file) | Prompt-level guidance | N/A |
 | Codex CLI | AGENTS.md / instructions | Prompt-level guidance | N/A |
@@ -192,6 +194,37 @@ Returns `{}` when no rewrite (Cursor requires JSON for all paths).
 ```
 
 **No rewrite**: exit 0 with empty stdout (Vibe's contract for "no opinion" from a `pre_tool` hook).
+
+### Google Antigravity (Rust Binary)
+
+**Input** (stdin):
+
+```json
+{
+  "toolCall": {
+    "name": "run_command",
+    "args": {
+      "CommandLine": "git status"
+    }
+  },
+  "stepIdx": 1,
+  "conversationId": "..."
+}
+```
+
+**Output** (when rewritten):
+
+```json
+{
+  "decision": "allow",
+  "reason": "RTK auto-rewrite",
+  "overwrite": {
+    "CommandLine": "rtk git status"
+  }
+}
+```
+
+**No rewrite**: `{"decision": "allow"}`
 
 ### OpenCode (TypeScript Plugin)
 
