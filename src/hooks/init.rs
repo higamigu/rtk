@@ -2053,7 +2053,7 @@ pub fn run_antigravity_mode(global: bool, ctx: InitContext) -> Result<()> {
 }
 
 fn patch_antigravity_hooks_json(path: &Path, ctx: InitContext) -> Result<bool> {
-    let InitContext { verbose, dry_run } = ctx;
+    let InitContext { verbose, dry_run, .. } = ctx;
     let mut root = if path.exists() {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
@@ -2160,7 +2160,7 @@ fn insert_antigravity_hook_entry(root: &mut serde_json::Value) -> Result<()> {
 }
 
 pub fn run_antigravity_mode_at(base_dir: &Path, global: bool, ctx: InitContext) -> Result<()> {
-    let InitContext { verbose, dry_run } = ctx;
+    let InitContext { verbose, dry_run, .. } = ctx;
 
     let (target_hooks_path, target_rules_path) = if global {
         (
