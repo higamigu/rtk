@@ -34,6 +34,7 @@ LLM agent integration layer that installs, validates, and executes command-rewri
 | Pi | `rtk init --agent pi` | `.pi/extensions/rtk.ts` | -- |
 | Oh My Pi (OMP) | `rtk init --agent omp` | `.omp/extensions/rtk.ts` (shared Pi extension) | -- |
 | Hermes | `rtk init --agent hermes` | Python plugin in `~/.hermes/plugins/rtk-rewrite/` | `config.yaml` `plugins.enabled` |
+| Antigravity | `rtk init --agent antigravity` (or `-g`) | `.agents/hooks.json` (local) or `~/.gemini/config/hooks.json` (global) | `hooks.json` `PreToolUse` hook |
 
 
 ## Integrity Verification
@@ -93,12 +94,13 @@ Rules are loaded from all Claude Code `settings.json` files (project + global, i
 | Copilot CLI (rtk hook copilot) | No updatedInput | deny-with-suggestion (unchanged) |
 | Codex (`rtk hook codex`) | Native approval runs after rewrite | Emit required protocol `allow` with `updatedInput`; Codex then evaluates the rewritten command normally |
 | Mistral Vibe (rtk hook vibe) | No native ask surface | passthrough — Vibe's own approval prompt fires on the rewritten command |
+| Google Antigravity (`rtk hook antigravity`) | No native ask surface | Native approval runs independently; emits `overwrite.CommandLine` |
 
 ### Implementation
 
 - `permissions.rs` — loads deny/ask/allow rules, evaluates precedence, returns `PermissionVerdict`
 - `rewrite_cmd.rs` — maps verdict to exit code (consumed by shell hook)
-- `hook_cmd.rs` — maps decisions to each agent's JSON protocol, including Codex `updatedInput`
+- `hook_cmd.rs` — maps decisions to each agent's JSON protocol, including Codex `updatedInput` and Antigravity `overwrite.CommandLine`
 
 ## Exit Code Contract
 

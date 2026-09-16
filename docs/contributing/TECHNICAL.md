@@ -322,6 +322,7 @@ Start here, then drill down into each README for file-level details.
 | [`windsurf/`](../hooks/windsurf/README.md) | Windsurf / Cascade | Rules file (workspace-scoped) |
 | [`codex/`](../hooks/codex/README.md) | OpenAI Codex CLI | Native `PreToolUse` processor, hooks.json registration, AGENTS.md awareness |
 | [`opencode/`](../hooks/opencode/README.md) | OpenCode | TypeScript plugin, zx library, in-place mutation |
+| [`antigravity/`](../hooks/antigravity/README.md) | Google Antigravity | Native `PreToolUse` processor, hooks.json registration |
 
 ---
 
@@ -336,6 +337,7 @@ RTK supports the following LLM agents through hook integrations:
 | GitHub Copilot CLI | Rust binary | `rtk hook copilot` reads JSON | Yes (`updatedInput`) |
 | Cursor | Rust binary | `rtk hook cursor` reads JSON | Yes (`updated_input`) |
 | Gemini CLI | Rust binary | `rtk hook gemini` reads JSON | Yes (`hookSpecificOutput`) |
+| Google Antigravity | Rust binary | `rtk hook antigravity` reads JSON | Yes (`overwrite.CommandLine`) |
 | Cline/Roo Code | Rules file | Prompt-level guidance | N/A (prompt) |
 | Windsurf | Rules file | Prompt-level guidance | N/A (prompt) |
 | Codex CLI | Rust binary | `rtk hook codex` reads JSON | Yes (`updatedInput`) |

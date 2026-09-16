@@ -43,7 +43,7 @@ Agent runs "cargo test"
 | Windsurf | Rules file (prompt-level) | N/A |
 | Codex CLI | Rust binary (`PreToolUse`) | Yes |
 | Kilo Code | Rules file (prompt-level) | N/A |
-| Google Antigravity | Rules file (prompt-level) | N/A |
+| Google Antigravity | Rust binary (`PreToolUse`, `hooks.json`) | Yes |
 | Mistral Vibe | Rust binary (`pre_tool`) | Yes |
 
 Agents that rewrite transparently receive the awareness file selected by `awareness.level` in
@@ -229,10 +229,11 @@ Kilo Code reads `.kilocode/rules/` as custom instructions. RTK adds guidance tel
 ### Google Antigravity
 
 ```bash
-rtk init --agent antigravity    # creates .agents/rules/antigravity-rtk-rules.md in current project
+rtk init --agent antigravity       # project-scoped (.agents/hooks.json)
+rtk init -g --agent antigravity    # global (~/.gemini/config/hooks.json)
 ```
 
-Antigravity reads `.agents/rules/` as custom instructions. RTK adds guidance telling Antigravity to prefer `rtk <cmd>` over raw commands.
+Antigravity executes the native `rtk hook antigravity` command as a `PreToolUse` lifecycle hook before every `run_command` invocation. RTK automatically rewrites the command in place via Antigravity's `overwrite.CommandLine` property.
 
 ### Mistral Vibe
 
@@ -265,7 +266,7 @@ Strips only RTK's `[[hooks]]` block and the `~/.vibe/prompts/rtk.md` file. Any o
 | **Plugin** | TypeScript, JavaScript, or Python in agent's plugin system | Transparent, in-place mutation when the agent allows it |
 | **Rules file** | Prompt-level instructions | Guidance only — agent is told to prefer `rtk <cmd>` |
 
-Rules file integrations (Cline, Windsurf, Kilo Code, Antigravity) rely on the model following instructions. Full hook integrations (Claude Code, Cursor, Gemini, Codex) rewrite the command before execution. Plugin integrations (OpenCode, Pi) use in-place mutation via the agent's TypeScript extension API.
+Rules file integrations (Cline, Windsurf, Kilo Code) rely on the model following instructions. Full hook integrations (Claude Code, Cursor, Gemini, Codex, Antigravity, Mistral Vibe) rewrite the command before execution. Plugin integrations (OpenCode, Pi) use in-place mutation via the agent's TypeScript extension API.
 
 ## Windows support
 
