@@ -1,6 +1,6 @@
 use super::constants::{
-    CLAUDE_DIR, CURSOR_DIR, DROID_DIR, DROID_HOME_ENV, DROID_SETTINGS_FILE, GEMINI_DIR,
-    SETTINGS_JSON, SETTINGS_LOCAL_JSON,
+    ANTIGRAVITY_DIR, CLAUDE_DIR, CURSOR_DIR, DROID_DIR, DROID_HOME_ENV, DROID_SETTINGS_FILE,
+    GEMINI_DIR, SETTINGS_JSON, SETTINGS_LOCAL_JSON,
 };
 use super::init::resolve_claude_dir;
 use crate::core::stream::exec_capture;
@@ -39,6 +39,7 @@ pub enum Host {
     Gemini,
     Droid,
     Vibe,
+    Antigravity,
 }
 
 pub fn check_command_for(cmd: &str, host: Host) -> PermissionVerdict {
@@ -63,6 +64,7 @@ pub(crate) fn load_rules_for(host: Host) -> (Vec<String>, Vec<String>, Vec<Strin
         // rules as Claude Bash patterns or borrow another host's settings.
         // No RTK-side match means Default, not an explicit Allow.
         Host::Codex | Host::Vibe => (Vec::new(), Vec::new(), Vec::new()),
+        Host::Antigravity => load_antigravity_rules(),
     }
 }
 
@@ -254,6 +256,22 @@ fn append_wrapped_rules(rules_value: Option<&Value>, prefixes: &[&str], target: 
 // This keeps RTK's allow set a subset of the host's — never more permissive.
 fn global_config(dir: &str, file: &str) -> Option<Value> {
     read_json(&dirs::home_dir()?.join(dir).join(file))
+}
+
+fn load_antigravity_rules() -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut deny = Vec::new();
+    let mut ask = Vec::new();
+    let mut allow = Vec::new();
+    let prefixes = ["command("];
+    if let Some(perms) = global_config(ANTIGRAVITY_DIR, SETTINGS_JSON)
+        .as_ref()
+        .and_then(|j| j.get("permissions"))
+    {
+        append_wrapped_rules(perms.get("deny"), &prefixes, &mut deny);
+        append_wrapped_rules(perms.get("ask"), &prefixes, &mut ask);
+        append_wrapped_rules(perms.get("allow"), &prefixes, &mut allow);
+    }
+    (deny, ask, allow)
 }
 
 fn load_cursor_rules() -> (Vec<String>, Vec<String>, Vec<String>) {

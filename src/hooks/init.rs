@@ -14,10 +14,11 @@ use crate::hooks::constants::{
 };
 
 use super::constants::{
+    AGENTS_DIR, ANTIGRAVITY_HOOK_COMMAND, ANTIGRAVITY_HOOK_NAME, ANTIGRAVITY_RUN_COMMAND_MATCHER,
     BEFORE_TOOL_KEY, CLAUDE_DIR, CLAUDE_HOOK_COMMAND, CODEX_DIR, CODEX_HOOK_COMMAND,
     CURSOR_HOOK_COMMAND, DROID_DIR, DROID_EXECUTE_MATCHER, DROID_HOME_ENV, DROID_HOOK_COMMAND,
-    DROID_HOOKS_FILE, DROID_HOOKS_SUBDIR, DROID_SETTINGS_FILE, GEMINI_HOOK_FILE, HERMES_DIR,
-    HERMES_PLUGIN_INIT_FILE, HERMES_PLUGIN_MANIFEST_FILE, HERMES_PLUGIN_NAME,
+    DROID_HOOKS_FILE, DROID_HOOKS_SUBDIR, DROID_SETTINGS_FILE, GEMINI_CONFIG_DIR, GEMINI_HOOK_FILE,
+    HERMES_DIR, HERMES_PLUGIN_INIT_FILE, HERMES_PLUGIN_MANIFEST_FILE, HERMES_PLUGIN_NAME,
     HERMES_PLUGINS_SUBDIR, HOOKS_JSON, HOOKS_SUBDIR, OMP_DIR, OMP_LOCAL_DIR, PI_AGENT_STATE_FILE,
     PI_CODING_AGENT_DIR_ENV, PI_DIR, PI_EXTENSIONS_SUBDIR, PI_LOCAL_DIR, PI_PLUGIN_FILE,
     PRE_TOOL_USE_KEY, REWRITE_HOOK_FILE, SETTINGS_JSON, VIBE_BASH_MATCH, VIBE_DIR,
@@ -2102,56 +2103,132 @@ fn run_kilocode_mode_at(base_dir: &Path, ctx: InitContext) -> Result<()> {
 
 // ─── Google Antigravity support ───────────────────────────────
 
-pub fn run_antigravity_mode(ctx: InitContext) -> Result<()> {
-    run_antigravity_mode_at(&std::env::current_dir()?, ctx)
+pub fn run_antigravity_mode(global: bool, ctx: InitContext) -> Result<()> {
+    if global {
+        let global_dir = resolve_home_subdir(GEMINI_CONFIG_DIR)?;
+        run_antigravity_mode_at(&global_dir, true, ctx)
+    } else {
+        run_antigravity_mode_at(&std::env::current_dir()?, false, ctx)
+    }
 }
 
-fn run_antigravity_mode_at(base_dir: &Path, ctx: InitContext) -> Result<()> {
+fn patch_antigravity_hooks_json(path: &Path, ctx: InitContext) -> Result<bool> {
     let InitContext {
         verbose, dry_run, ..
     } = ctx;
-    // Antigravity reads .agents/rules/ from the project root (workspace-scoped)
-    let target_dir = base_dir.join(".agents/rules");
-    let rules_path = target_dir.join("antigravity-rtk-rules.md");
+    let mut root = read_json_file(path)?.unwrap_or_else(|| serde_json::json!({}));
 
-    let existing = fs::read_to_string(&rules_path).unwrap_or_default();
-    if existing.contains("RTK") || existing.contains("rtk") {
-        if !dry_run {
-            println!("\nRTK already configured for Antigravity in this project.\n");
-            println!("  Rules: .agents/rules/antigravity-rtk-rules.md (already present)");
+    if antigravity_hook_already_present(&root) {
+        if verbose > 0 {
+            eprintln!("Antigravity hooks.json: RTK hook already present");
         }
-    } else {
-        let new_content = if existing.trim().is_empty() {
-            RTK_AWARENESS_FULL.to_string()
-        } else {
-            format!("{}\n\n{}", existing.trim(), RTK_AWARENESS_FULL)
-        };
-        if dry_run {
-            println!(
-                "[dry-run] would write {}: (and create parent dir if missing)",
-                rules_path.display()
-            );
-            if verbose > 0 {
-                println!("[dry-run] content:\n{}", new_content);
-            }
-        } else {
-            fs::create_dir_all(&target_dir).context("Failed to create .agents/rules directory")?;
-            fs::write(&rules_path, &new_content)
-                .context("Failed to write .agents/rules/antigravity-rtk-rules.md")?;
+        return Ok(false);
+    }
 
-            if verbose > 0 {
-                eprintln!("Wrote .agents/rules/antigravity-rtk-rules.md");
-            }
+    insert_antigravity_hook_entry(&mut root)?;
 
-            println!("\nRTK configured for Google Antigravity.\n");
-            println!("  Rules: .agents/rules/antigravity-rtk-rules.md (installed)");
+    let serialized =
+        serde_json::to_string_pretty(&root).context("Failed to serialize hooks.json")?;
+
+    if dry_run {
+        println!(
+            "[dry-run] would patch Antigravity hooks.json: {}",
+            path.display()
+        );
+        if verbose > 0 {
+            println!("[dry-run] content:\n{}", serialized);
+        }
+        return Ok(true);
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+    }
+
+    backup_and_atomic_write(path, &serialized)?;
+    if verbose > 0 {
+        eprintln!("Patched Antigravity hooks: {}", path.display());
+    }
+    Ok(true)
+}
+
+fn antigravity_hook_already_present(root: &serde_json::Value) -> bool {
+    if root.get(ANTIGRAVITY_HOOK_NAME).is_some() {
+        return true;
+    }
+    if let Some(obj) = root.as_object() {
+        for (_name, hook_val) in obj {
+            if let Some(pre) = hook_val.get(PRE_TOOL_USE_KEY).and_then(|p| p.as_array()) {
+                for group in pre {
+                    if let Some(hooks) = group.get("hooks").and_then(|h| h.as_array()) {
+                        for h in hooks {
+                            if h.get("command")
+                                .and_then(|c| c.as_str())
+                                .is_some_and(|c| c.contains(ANTIGRAVITY_HOOK_COMMAND))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
-    print_rules_only_awareness_note("Antigravity", ctx);
+    false
+}
+
+fn insert_antigravity_hook_entry(root: &mut serde_json::Value) -> Result<()> {
+    let hook_entry = serde_json::json!({
+        PRE_TOOL_USE_KEY: [
+            {
+                "matcher": ANTIGRAVITY_RUN_COMMAND_MATCHER,
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": ANTIGRAVITY_HOOK_COMMAND,
+                        "timeout": 10
+                    }
+                ]
+            }
+        ]
+    });
+    if let Some(obj) = root.as_object_mut() {
+        obj.insert(ANTIGRAVITY_HOOK_NAME.to_string(), hook_entry);
+    } else {
+        *root = serde_json::json!({
+            ANTIGRAVITY_HOOK_NAME: hook_entry
+        });
+    }
+    Ok(())
+}
+
+pub fn run_antigravity_mode_at(base_dir: &Path, global: bool, ctx: InitContext) -> Result<()> {
+    let InitContext { dry_run, .. } = ctx;
+
+    let target_hooks_path = if global {
+        base_dir.join(HOOKS_JSON)
+    } else {
+        base_dir.join(AGENTS_DIR).join(HOOKS_JSON)
+    };
+
+    let patched = patch_antigravity_hooks_json(&target_hooks_path, ctx)?;
+
     if dry_run {
         print_dry_run_footer();
     } else {
-        println!("  Antigravity will now use rtk commands for token savings.");
+        println!(
+            "\nRTK configured for Google Antigravity ({}).\n",
+            if global { "global" } else { "project-scoped" }
+        );
+        println!("  Command:    {}", ANTIGRAVITY_HOOK_COMMAND);
+        println!("  hooks.json: {}", target_hooks_path.display());
+        if patched {
+            println!("  hooks.json: RTK PreToolUse entry added");
+        } else {
+            println!("  hooks.json: RTK PreToolUse entry already present");
+        }
+        println!("\n  Antigravity will now automatically rewrite shell commands through RTK.");
         println!("  Test with: git status\n");
     }
 
@@ -6842,14 +6919,6 @@ mod tests {
                 "kilocode with level {level}"
             );
 
-            run_antigravity_mode_at(temp.path(), ctx).unwrap();
-            assert_eq!(
-                fs::read_to_string(temp.path().join(".agents/rules/antigravity-rtk-rules.md"))
-                    .unwrap(),
-                RTK_AWARENESS_FULL,
-                "antigravity with level {level}"
-            );
-
             run_kimi_mode_at(temp.path(), ctx).unwrap();
             let agents_md = fs::read_to_string(temp.path().join(AGENTS_MD)).unwrap();
             assert!(
@@ -6891,28 +6960,59 @@ mod tests {
     }
 
     #[test]
-    fn test_antigravity_mode_creates_rules_file() {
+    fn test_antigravity_mode_creates_hooks_json() {
         let temp = TempDir::new().unwrap();
-        run_antigravity_mode_at(temp.path(), InitContext::default()).unwrap();
+        run_antigravity_mode_at(temp.path(), false, InitContext::default()).unwrap();
 
-        let rules_path = temp.path().join(".agents/rules/antigravity-rtk-rules.md");
-        assert!(rules_path.exists(), "Rules file should be created");
-        let content = fs::read_to_string(&rules_path).unwrap();
-        assert!(content.contains("RTK"), "Rules file should contain RTK");
+        let hooks_path = temp.path().join(".agents/hooks.json");
+        assert!(hooks_path.exists(), "hooks.json should be created");
+        let hooks_content = fs::read_to_string(&hooks_path).unwrap();
+        assert!(
+            hooks_content.contains("rtk-rewrite") && hooks_content.contains("rtk hook antigravity"),
+            "hooks.json should contain RTK hook"
+        );
+        assert!(
+            !temp
+                .path()
+                .join(".agents/rules/antigravity-rtk-rules.md")
+                .exists(),
+            "antigravity mode should not create rules file"
+        );
+    }
+
+    #[test]
+    fn test_antigravity_mode_global_creates_hooks_json() {
+        let temp = TempDir::new().unwrap();
+        run_antigravity_mode_at(temp.path(), true, InitContext::default()).unwrap();
+
+        let hooks_path = temp.path().join(HOOKS_JSON);
+        assert!(hooks_path.exists(), "global hooks.json should be created");
+        let hooks_content = fs::read_to_string(&hooks_path).unwrap();
+        assert!(
+            hooks_content.contains("rtk-rewrite") && hooks_content.contains("rtk hook antigravity"),
+            "global hooks.json should contain RTK hook"
+        );
+        assert!(
+            !temp
+                .path()
+                .join(".agents/rules/antigravity-rtk-rules.md")
+                .exists(),
+            "global mode should not create project rules file"
+        );
     }
 
     #[test]
     fn test_antigravity_mode_is_idempotent() {
         let temp = TempDir::new().unwrap();
-        run_antigravity_mode_at(temp.path(), InitContext::default()).unwrap();
+        run_antigravity_mode_at(temp.path(), false, InitContext::default()).unwrap();
 
-        let path = temp.path().join(".agents/rules/antigravity-rtk-rules.md");
-        let first = fs::read_to_string(&path).unwrap();
+        let hooks_path = temp.path().join(".agents/hooks.json");
+        let first_hooks = fs::read_to_string(&hooks_path).unwrap();
 
         // Second run should not overwrite
-        run_antigravity_mode_at(temp.path(), InitContext::default()).unwrap();
-        let second = fs::read_to_string(&path).unwrap();
-        assert_eq!(first, second, "Idempotent: content should not change");
+        run_antigravity_mode_at(temp.path(), false, InitContext::default()).unwrap();
+        let second_hooks = fs::read_to_string(&hooks_path).unwrap();
+        assert_eq!(first_hooks, second_hooks, "hooks.json should not change");
     }
 
     #[test]

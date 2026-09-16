@@ -1098,6 +1098,116 @@ fn run_droid_inner_with_rules(
     droid_response_from_decision(&v, cmd, decide_from_verdict(cmd, verdict)).map(|o| o.to_string())
 }
 
+// ── Google Antigravity PreToolUse hook ─────────────────────────
+
+/// Run the Google Antigravity PreToolUse hook natively.
+pub fn run_antigravity() -> Result<()> {
+    let input = read_stdin_limited()?;
+    let output = run_antigravity_inner(&input);
+    let _ = writeln!(io::stdout(), "{output}");
+    Ok(())
+}
+
+fn run_antigravity_inner(input: &str) -> String {
+    let input = strip_leading_bom(input).trim();
+    if input.is_empty() {
+        return antigravity_passthrough_json();
+    }
+
+    let json: Value = match serde_json::from_str(input) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "[rtk hook] Failed to parse JSON input: {e}");
+            return antigravity_passthrough_json();
+        }
+    };
+
+    let tool_name = json
+        .pointer("/toolCall/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !tool_name.is_empty() && tool_name != "run_command" {
+        return antigravity_passthrough_json();
+    }
+
+    let cmd_key = if json.pointer("/toolCall/args/commandLine").is_some() {
+        "commandLine"
+    } else if json.pointer("/toolCall/args/command").is_some() {
+        "command"
+    } else {
+        "CommandLine"
+    };
+
+    let cmd = json
+        .pointer(&format!("/toolCall/args/{cmd_key}"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if cmd.is_empty() {
+        return antigravity_passthrough_json();
+    }
+
+    let verdict = permissions::check_command_for(cmd, permissions::Host::Antigravity);
+    if verdict == permissions::PermissionVerdict::Deny {
+        audit_log("deny", cmd, "");
+        return serde_json::json!({
+            "decision": "deny",
+            "reason": "Blocked by RTK permission rule"
+        })
+        .to_string();
+    }
+
+    let decision = decide_from_verdict(cmd, verdict.clone());
+    match decision {
+        HookDecision::AllowRewrite(rewritten) => {
+            audit_log("rewrite", cmd, &rewritten);
+            antigravity_rewrite_json(cmd_key, &rewritten, "allow")
+        }
+        HookDecision::AskRewrite(rewritten) => {
+            audit_log("rewrite", cmd, &rewritten);
+            if verdict == permissions::PermissionVerdict::Ask {
+                antigravity_rewrite_json(cmd_key, &rewritten, "force_ask")
+            } else {
+                antigravity_rewrite_json(cmd_key, &rewritten, "ask")
+            }
+        }
+        HookDecision::Deny => {
+            audit_log("deny", cmd, "");
+            serde_json::json!({
+                "decision": "deny",
+                "reason": "Blocked by RTK permission rule"
+            })
+            .to_string()
+        }
+        HookDecision::Defer => {
+            if verdict == permissions::PermissionVerdict::Ask {
+                serde_json::json!({
+                    "decision": "force_ask",
+                    "reason": "Requires confirmation per RTK permission rule"
+                })
+                .to_string()
+            } else {
+                antigravity_passthrough_json()
+            }
+        }
+    }
+}
+
+fn antigravity_passthrough_json() -> String {
+    r#"{"decision":"allow"}"#.to_string()
+}
+
+fn antigravity_rewrite_json(cmd_key: &str, rewritten: &str, decision: &str) -> String {
+    serde_json::json!({
+        "decision": decision,
+        "reason": "RTK auto-rewrite",
+        "overwrite": {
+            cmd_key: rewritten
+        }
+    })
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2830,5 +2940,92 @@ mod tests {
     fn test_vibe_substitution_defers() {
         let input = vibe_input("bash", "echo $(rm -rf /)");
         assert!(run_vibe_inner(&input).is_none());
+    }
+
+    // --- Antigravity hook tests ---
+
+    fn antigravity_input(tool: &str, cmd: &str) -> String {
+        json!({
+            "toolCall": {
+                "name": tool,
+                "args": {
+                    "CommandLine": cmd
+                }
+            },
+            "stepIdx": 1,
+            "conversationId": "test-conv-id"
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn test_antigravity_rewrites_run_command() {
+        let input = antigravity_input("run_command", "git status");
+        let out = run_antigravity_inner(&input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(matches!(
+            v.get("decision").and_then(|d| d.as_str()),
+            Some("allow") | Some("ask")
+        ));
+        assert_eq!(
+            v.pointer("/overwrite/CommandLine").and_then(|c| c.as_str()),
+            Some("rtk git status")
+        );
+        assert!(v.get("permissionOverrides").is_none());
+    }
+
+    #[test]
+    fn test_antigravity_strips_utf8_bom() {
+        let input = format!("\u{feff}{}", antigravity_input("run_command", "git status"));
+        let out = run_antigravity_inner(&input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v.pointer("/overwrite/CommandLine").and_then(|c| c.as_str()),
+            Some("rtk git status")
+        );
+        assert!(v.get("permissionOverrides").is_none());
+    }
+
+    #[test]
+    fn test_antigravity_handles_camel_case_arg() {
+        let input = json!({
+            "toolCall": {
+                "name": "run_command",
+                "args": {
+                    "commandLine": "git status"
+                }
+            }
+        })
+        .to_string();
+        let out = run_antigravity_inner(&input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v.pointer("/overwrite/commandLine").and_then(|c| c.as_str()),
+            Some("rtk git status")
+        );
+    }
+
+    #[test]
+    fn test_antigravity_ignores_other_tools() {
+        let input = antigravity_input("edit_file", "git status");
+        let out = run_antigravity_inner(&input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.get("decision").and_then(|d| d.as_str()), Some("allow"));
+        assert!(v.get("overwrite").is_none());
+    }
+
+    #[test]
+    fn test_antigravity_empty_or_whitespace_input() {
+        assert_eq!(run_antigravity_inner(""), r#"{"decision":"allow"}"#);
+        assert_eq!(run_antigravity_inner("   "), r#"{"decision":"allow"}"#);
+    }
+
+    #[test]
+    fn test_antigravity_unsupported_command_passthrough() {
+        let input = antigravity_input("run_command", "some_unknown_command --flag");
+        let out = run_antigravity_inner(&input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.get("decision").and_then(|d| d.as_str()), Some("allow"));
+        assert!(v.get("overwrite").is_none());
     }
 }
